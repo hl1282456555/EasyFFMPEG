@@ -47,12 +47,10 @@ public class EasyFFMPEG : ModuleRules
 			isLibrarySupported = true;
 
 			string libType = "x64_" + (Target.Configuration == UnrealTargetConfiguration.Debug ? "Debug" : "Release");
-			string LibrariesPath = Path.Combine(ThirdPartyPath, "ffmpeg", "libs", libType);
-			string BinariesPath = Path.Combine(ThirdPartyPath, "ffmpeg", "bin", libType);
+			string LibrariesPath = Path.Combine(ThirdPartyPath, "ffmpeg", "libs", libType, "Windows");
+			string BinariesPath = Path.Combine(ThirdPartyPath, "ffmpeg", "bin", libType, "Windows");
 
 			System.Console.WriteLine("... LibrariesPath ---->" + LibrariesPath);
-
-			string zlibLibName = "zlib" + (Target.Configuration == UnrealTargetConfiguration.Debug ? "d" : "") + ".lib";
 
             PublicAdditionalLibraries.AddRange(
 				new string[] 
@@ -61,20 +59,15 @@ public class EasyFFMPEG : ModuleRules
                     Path.Combine(LibrariesPath, "avdevice.lib"),
                     Path.Combine(LibrariesPath, "avfilter.lib"),
                     Path.Combine(LibrariesPath, "avformat.lib"),
-                    Path.Combine(LibrariesPath, "AviSynth.lib"),
                     Path.Combine(LibrariesPath, "avresample.lib"),
                     Path.Combine(LibrariesPath, "avutil.lib"),
                     Path.Combine(LibrariesPath, "libmp3lame.lib"),
                     Path.Combine(LibrariesPath, "libx264.lib"),
                     Path.Combine(LibrariesPath, "postproc.lib"),
                     Path.Combine(LibrariesPath, "swresample.lib"),
-                    Path.Combine(LibrariesPath, "swscale.lib"),
-                    Path.Combine(LibrariesPath, "wavpackdll.lib"),
-                    //Path.Combine(LibrariesPath, zlibLibName),
+                    Path.Combine(LibrariesPath, "swscale.lib")
                 }
 			);
-
-			string zlibDllName = "zlib" + (Target.Configuration == UnrealTargetConfiguration.Debug ? "d1" : "1") + ".dll";
 
 			string[] dllNames = 
 			{
@@ -82,16 +75,13 @@ public class EasyFFMPEG : ModuleRules
 				"avdevice-58.dll",
 				"avfilter-7.dll",
 				"avformat-58.dll",
-				"AviSynth.dll",
 				"avresample-4.dll",
 				"avutil-56.dll",
 				"libmp3lame.dll",
-				"libx264-157.dll",
+				"libx264-163.dll",
 				"postproc-55.dll",
 				"swresample-3.dll",
-				"swscale-5.dll",
-				"wavpackdll.dll",
-				//zlibDllName,
+				"swscale-5.dll"
 			};
 
 			foreach (string dllName in dllNames)
@@ -100,6 +90,33 @@ public class EasyFFMPEG : ModuleRules
 				RuntimeDependencies.Add(Path.Combine(BinariesPath, dllName), StagedFileType.NonUFS);
             }
         }
+		else if (Target.Platform == UnrealTargetPlatform.Linux)
+        {
+			isLibrarySupported = true;
+
+			string libType = "x64_" + (Target.Configuration == UnrealTargetConfiguration.Debug ? "Debug" : "Release");
+			string LibrariesPath = Path.Combine(ThirdPartyPath, "ffmpeg", "libs", libType, "Linux");
+			string BinariesPath = Path.Combine(ThirdPartyPath, "ffmpeg", "bin", libType, "Linux");
+
+			System.Console.WriteLine("... LibrariesPath ---->" + LibrariesPath);
+
+			PublicAdditionalLibraries.AddRange(
+				new string[]
+				{
+					Path.Combine(LibrariesPath, "libavcodec.a"),
+					Path.Combine(LibrariesPath, "libavdevice.a"),
+					Path.Combine(LibrariesPath, "libavfilter.a"),
+					Path.Combine(LibrariesPath, "libavformat.a"),
+					Path.Combine(LibrariesPath, "libavresample.a"),
+					Path.Combine(LibrariesPath, "libavutil.a"),
+					Path.Combine(LibrariesPath, "libmp3lame.a"),
+					Path.Combine(LibrariesPath, "libpostproc.a"),
+					Path.Combine(LibrariesPath, "libswresample.a"),
+					Path.Combine(LibrariesPath, "libswscale.a"),
+					Path.Combine(LibrariesPath, "libx264.a")
+				}
+			);
+		}
 
 		if (isLibrarySupported)
         {
@@ -143,6 +160,8 @@ public class EasyFFMPEG : ModuleRules
 				"Engine",
 				"Slate",
 				"SlateCore",
+				"RenderCore",
+				"RHI",
 				"Projects",
 				"MovieSceneCapture",
 				// ... add private dependencies that you statically link with here ...	

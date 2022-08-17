@@ -7,6 +7,8 @@
 #include "Engine/GameEngine.h"
 #include "HAL/FileManager.h"
 
+#include "Kismet/GameplayStatics.h"
+
 extern "C" {
 #include "libavcodec/avcodec.h"
 #include "libavutil/opt.h"
@@ -36,13 +38,23 @@ UVideoCaptureComponent::UVideoCaptureComponent()
 void UVideoCaptureComponent::StartCapture(const FString& InVideoFilename)
 {
 	ShouldCutFrameCount = 0;
+	CapturedFrameNumber = 0;
+
+	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+	if (PC == nullptr) {
+		UE_LOG(LogFFmpeg, Warning, TEXT("Can not found player controller."));
+		return;
+	}
 
 	if (IsInitialized()) {
 		UE_LOG(LogFFmpeg, Warning, TEXT("Please uninitialize capture component before call InitCapture()."));
 		return;
 	}
 
-	if (!InitFrameGrabber()) {
+	FIntPoint ViewportSize;
+	PC->GetViewportSize(ViewportSize.X, ViewportSize.Y);
+
+	if (!InitFrameGrabber(ViewportSize)) {
 		UE_LOG(LogFFmpeg, Error, TEXT("Init frame grabber failed."));
 		return;
 	}
@@ -78,37 +90,29 @@ void UVideoCaptureComponent::StartCapture(const FString& InVideoFilename)
 		return;
 	}
 
-	CodecCtx = Stream->codec;
+	CodecCtx = avcodec_alloc_context3(Codec);
 	if (Codec == nullptr) {
 		UE_LOG(LogFFmpeg, Error, TEXT("InitCapture() failed: Cloud not allocate video codec context."));
 		StopCapture();
 		return;
 	}
 
-	Packet = av_packet_alloc();
-	if (Packet == nullptr) {
-		UE_LOG(LogFFmpeg, Error, TEXT("InitCapture() failed: Cloud not allocate packet."));
-		StopCapture();
-		return;
-	}
+	Stream->codecpar->codec_id = FormatCtx->oformat->video_codec;
+	Stream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+	Stream->codecpar->width = ViewportSize.X;
+	Stream->codecpar->height = ViewportSize.Y;
+	Stream->codecpar->format = AV_PIX_FMT_YUV420P;
+	Stream->codecpar->bit_rate = CaptureConfigs.BitRate * 1000;
 
-	CodecCtx->bit_rate = CaptureConfigs.BitRate;
-	CodecCtx->width = CaptureConfigs.Width;
-	CodecCtx->height = CaptureConfigs.Height;
-	CodecCtx->time_base = {CaptureConfigs.FrameRate.Y, CaptureConfigs.FrameRate.X};
-	CodecCtx->framerate = {CaptureConfigs.FrameRate.X, CaptureConfigs.FrameRate.Y};
+	avcodec_parameters_to_context(CodecCtx, Stream->codecpar);
+	
+	CodecCtx->time_base = { CaptureConfigs.FrameRate.Y, CaptureConfigs.FrameRate.X };
+	CodecCtx->framerate = { CaptureConfigs.FrameRate.X, CaptureConfigs.FrameRate.Y };
 	CodecCtx->gop_size = CaptureConfigs.GopSize;
 	CodecCtx->max_b_frames = CaptureConfigs.MaxBFrames;
-	
-	/*int32 pixLoss;*/
-	CodecCtx->pix_fmt = AV_PIX_FMT_YUV444P/*avcodec_find_best_pix_fmt_of_list(Codec->pix_fmts, AV_PIX_FMT_RGBA, true, &pixLoss)*/;
 
-	if (Codec->id == AV_CODEC_ID_H264) {
-		av_opt_set(CodecCtx->priv_data, "preset", "slow", 0);
-	}
-
-	if (FormatCtx->oformat->flags & AVFMT_GLOBALHEADER) {
-		CodecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+	if (Stream->codecpar->codec_id == AV_CODEC_ID_H264) {
+		av_opt_set(CodecCtx, "preset", "slow", 0);
 	}
 
 	result = avcodec_open2(CodecCtx, Codec, nullptr);
@@ -118,14 +122,7 @@ void UVideoCaptureComponent::StartCapture(const FString& InVideoFilename)
 		return;
 	}
 
-	result = avcodec_parameters_from_context(Stream->codecpar, CodecCtx);
-	if (result < 0) {
-		UE_LOG(LogFFmpeg, Error, TEXT("Can not fill codec params."));
-		StopCapture();
-		return;
-	}
-
-	Stream->time_base = {CaptureConfigs.FrameRate.Y, CaptureConfigs.FrameRate.X};
+	avcodec_parameters_from_context(Stream->codecpar, CodecCtx);
 
 	av_dump_format(FormatCtx, 0, TCHAR_TO_UTF8(*VideoFilename), 1);
 
@@ -139,6 +136,13 @@ void UVideoCaptureComponent::StartCapture(const FString& InVideoFilename)
 	result = avformat_write_header(FormatCtx, nullptr);
 	if (result < 0) {
 		UE_LOG(LogFFmpeg, Error, TEXT("Error ocurred when write header into file."));
+		StopCapture();
+		return;
+	}
+
+	Packet = av_packet_alloc();
+	if (Packet == nullptr) {
+		UE_LOG(LogFFmpeg, Error, TEXT("InitCapture() failed: Cloud not allocate packet."));
 		StopCapture();
 		return;
 	}
@@ -160,6 +164,9 @@ void UVideoCaptureComponent::StartCapture(const FString& InVideoFilename)
 		StopCapture();
 		return;
 	}
+
+	FrameTimeForCapture = FTimespan::FromSeconds(CaptureConfigs.FrameRate.Y / (CaptureConfigs.FrameRate.X * 1.0f));
+	PassedTime = FrameTimeForCapture;
 
 	CaptureState = EMovieCaptureState::Initialized;
 }
@@ -190,15 +197,6 @@ bool UVideoCaptureComponent::CaptureThisFrame(int32 CurrentFrame)
 	}
 
 	FCapturedFrameData& lastFrame = frames.Last();
-
-	//TArray<uint8> rgbColor;
-	//for (int32 index = 0; index < lastFrame.ColorBuffer.Num(); index++)
-	//{
-	//	rgbColor.Add(lastFrame.ColorBuffer[index].R);
-	//	rgbColor.Add(lastFrame.ColorBuffer[index].G);
-	//	rgbColor.Add(lastFrame.ColorBuffer[index].B);
-	//	rgbColor.Add(lastFrame.ColorBuffer[index].A);
-	//}
 
 	WriteFrameToFile(lastFrame.ColorBuffer, CurrentFrame);
 
@@ -256,7 +254,7 @@ void UVideoCaptureComponent::DestroyVideoFileWriter()
 	Writer = nullptr;
 }
 
-bool UVideoCaptureComponent::InitFrameGrabber()
+bool UVideoCaptureComponent::InitFrameGrabber(const FIntPoint& ViewportSize)
 {
 	if (FrameGrabber.IsValid()) {
 		return true;
@@ -297,9 +295,12 @@ bool UVideoCaptureComponent::InitFrameGrabber()
 
 		sceneViewport = gameEngine->SceneViewport;
 	}
-
-
-	FrameGrabber = MakeShareable(new FFrameGrabber(sceneViewport.ToSharedRef(), FIntPoint(CaptureConfigs.Width, CaptureConfigs.Height)));
+	
+	if (!sceneViewport) {
+		return false;
+	}
+	
+	FrameGrabber = MakeShareable(new FFrameGrabber(sceneViewport.ToSharedRef(), ViewportSize));
 	FrameGrabber->StartCapturingFrames();
 
 	return true;
@@ -321,6 +322,11 @@ void UVideoCaptureComponent::ReleaseContext()
 		EncodeVideoFrame(CodecCtx, nullptr, Packet);
 
 		av_write_trailer(FormatCtx);
+	}
+
+	if (CodecCtx != nullptr) {
+		avcodec_free_context(&CodecCtx);
+		CodecCtx = nullptr;
 	}
 
 	if (FormatCtx != nullptr) {
@@ -419,4 +425,15 @@ void UVideoCaptureComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	// ...
+	if (!IsInitialized()) {
+		return;
+	}
+
+	PassedTime += FTimespan::FromSeconds(DeltaTime);
+	
+	if (PassedTime >= FrameTimeForCapture)
+	{
+		CaptureThisFrame(CapturedFrameNumber++);
+		PassedTime = FTimespan::Zero();
+	}
 }

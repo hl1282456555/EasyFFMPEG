@@ -1,0 +1,13 @@
+prefix=${pcfiledir}/../..
+
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/../include
+
+Name: libavdevice
+Description: FFmpeg device handling library
+Version: 58.13.100
+Conflicts:
+Libs: -L"${libdir}"  -lavdevice -lm -lxcb -lXau -lXdmcp -lxcb-shm -lxcb -lXau -lXdmcp -lxcb-shape -lxcb -lXau -lXdmcp -lxcb-xfixes -lxcb-render -lxcb-shape -lxcb -lXau -lXdmcp -lsndio -lXv -lX11 -lXext 
+Requires: libavfilter >= 7.110.100, libswscale >= 5.9.100, libpostproc >= 55.9.100, libavformat >= 58.76.100, libavcodec >= 58.134.100, libswresample >= 3.9.100, libavresample >= 4.0.0, libavutil >= 56.70.100 
+Cflags: -I"${includedir}"

@@ -19,7 +19,7 @@ void FEasyFFMPEGModule::StartupModule()
 	InitLibraryHandles();
 
 	// Init log level and bind callback
-	av_log_set_level(AV_LOG_INFO);
+	av_log_set_level(AV_LOG_WARNING);
 	av_log_set_callback(FFmpegCallback);
 
 	UE_LOG(LogFFmpeg, Log, TEXT("FFmpeg AVCodec version: %d.%d.%d"), LIBAVFORMAT_VERSION_MAJOR, LIBAVFORMAT_VERSION_MINOR, LIBAVFORMAT_VERSION_MICRO);
@@ -87,36 +87,28 @@ void FEasyFFMPEGModule::InitLibraryHandles()
 
 	FString zlibName;
 
-#if UE_BUILD_DEBUG
-	zlibName = TEXT("zlibd1.dll");
-#else
-	zlibName = TEXT("zlib1.dll");
-#endif
-
-	//ZlibHandle = LoadDependencyLibrary(zlibName);
+#if PLATFORM_WINDOWS
 	LibMP3LameHandle = LoadDependencyLibrary(TEXT("libmp3lame.dll"));
-	LibX264Handle = LoadDependencyLibrary(TEXT("libx264-157.dll"));
+	LibX264Handle = LoadDependencyLibrary(TEXT("libx264-163.dll"));
 	AVUtilHandle = LoadDependencyLibrary(TEXT("avutil-56.dll"));
 	PostProcHandle = LoadDependencyLibrary(TEXT("postproc-55.dll"));
 	SWResampleHandle = LoadDependencyLibrary(TEXT("swresample-3.dll"));
 	SWScaleHandle = LoadDependencyLibrary(TEXT("swscale-5.dll"));
-	WAVPackHandle = LoadDependencyLibrary(TEXT("wavpackdll.dll"));
 	AVCodecHandle = LoadDependencyLibrary(TEXT("avcodec-58.dll"));
 	AVResampleHandle = LoadDependencyLibrary(TEXT("avresample-4.dll"));
 	AVFormatHandle = LoadDependencyLibrary(TEXT("avformat-58.dll"));
 	AVFilterHandle = LoadDependencyLibrary(TEXT("avfilter-7.dll"));
-	AVISynthHandle = LoadDependencyLibrary(TEXT("AviSynth.dll"));
 	AVDeviceHandle = LoadDependencyLibrary(TEXT("avdevice-58.dll"));
 
 	if (AVCodecHandle == nullptr || AVDeviceHandle == nullptr || AVFilterHandle == nullptr ||
-		AVFormatHandle == nullptr || AVISynthHandle == nullptr || AVResampleHandle == nullptr ||
+		AVFormatHandle == nullptr || AVResampleHandle == nullptr ||
 		AVUtilHandle == nullptr || LibMP3LameHandle == nullptr || LibX264Handle == nullptr ||
-		PostProcHandle == nullptr || SWResampleHandle == nullptr || SWScaleHandle == nullptr ||
-		WAVPackHandle == nullptr /*|| ZlibHandle == nullptr*/) {
+		PostProcHandle == nullptr || SWResampleHandle == nullptr || SWScaleHandle == nullptr) {
 		
 		UE_LOG(LogFFmpeg, Error, TEXT("Load dependecy dll failed."));
 		return;
 	}
+#endif
 
 	bInitialized = true;
 }
@@ -125,14 +117,10 @@ void FEasyFFMPEGModule::UnloadHandledLibraries()
 {
 	bInitialized = false;
 
+#if PLATFORM_WINDOWS
 	if (AVDeviceHandle != nullptr) {
 		FPlatformProcess::FreeDllHandle(AVDeviceHandle);
 		AVDeviceHandle = nullptr;
-	}
-
-	if (AVISynthHandle != nullptr) {
-		FPlatformProcess::FreeDllHandle(AVISynthHandle);
-		AVISynthHandle = nullptr;
 	}
 
 	if (AVFilterHandle != nullptr) {
@@ -153,11 +141,6 @@ void FEasyFFMPEGModule::UnloadHandledLibraries()
 	if (AVCodecHandle != nullptr) {
 		FPlatformProcess::FreeDllHandle(AVCodecHandle);
 		AVCodecHandle = nullptr;
-	}
-
-	if (WAVPackHandle != nullptr) {
-		FPlatformProcess::FreeDllHandle(WAVPackHandle);
-		WAVPackHandle = nullptr;
 	}
 
 	if (SWScaleHandle != nullptr) {
@@ -189,11 +172,7 @@ void FEasyFFMPEGModule::UnloadHandledLibraries()
 		FPlatformProcess::FreeDllHandle(LibMP3LameHandle);
 		LibMP3LameHandle = nullptr;
 	}
-
-	//if (ZlibHandle != nullptr) {
-	//	FPlatformProcess::FreeDllHandle(ZlibHandle);
-	//	ZlibHandle = nullptr;
-	//}
+#endif
 }
 
 void* FEasyFFMPEGModule::LoadDependencyLibrary(const FString& DLLName)
@@ -208,7 +187,7 @@ void* FEasyFFMPEGModule::LoadDependencyLibrary(const FString& DLLName)
 	bIsDebug = false;
 #endif
 
-	FString dllDir = FPaths::Combine(*baseDir, TEXT("ThirdParty/ffmpeg/bin/"), bIsDebug ? TEXT("x64_Debug") : TEXT("x64_Release"));
+	FString dllDir = FPaths::Combine(*baseDir, TEXT("ThirdParty/ffmpeg/bin/"), bIsDebug ? TEXT("x64_Debug") : TEXT("x64_Release"), TEXT("Windows"));
 
 	FString dllFilename = FPaths::Combine(*dllDir, *DLLName);
 

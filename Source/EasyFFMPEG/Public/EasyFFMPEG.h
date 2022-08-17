@@ -32,7 +32,6 @@ public:
 	void* AVDeviceHandle;
 	void* AVFilterHandle;
 	void* AVFormatHandle;
-	void* AVISynthHandle;
 	void* AVResampleHandle;
 	void* AVUtilHandle;
 	void* LibMP3LameHandle;
@@ -40,6 +39,4 @@ public:
 	void* PostProcHandle;
 	void* SWResampleHandle;
 	void* SWScaleHandle;
-	void* WAVPackHandle;
-	void* ZlibHandle;
 };

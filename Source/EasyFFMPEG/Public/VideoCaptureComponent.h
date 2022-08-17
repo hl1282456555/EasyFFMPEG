@@ -5,43 +5,8 @@
 #include "CoreMinimal.h"
 #include "FrameGrabber.h"
 #include "Components/SceneComponent.h"
+#include "VideoCaptureStructures.h"
 #include "VideoCaptureComponent.generated.h"
-
-UENUM(BlueprintType)
-enum class EMovieCaptureState : uint8
-{
-	NotInit = 0,
-	Initialized,
-	Capturing,
-};
-
-USTRUCT(BlueprintType)
-struct FCaptureConfigs
-{
-	GENERATED_USTRUCT_BODY()
-public:
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Capture Configs")
-	int32	BitRate;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Capture Configs")
-	int32	Width;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Capture Configs")
-	int32	Height;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Capture Configs")
-	FIntPoint	FrameRate;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Capture Configs")
-	int32	GopSize;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Capture Configs")
-	int32	MaxBFrames;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Capture Configs")
-	int32	PixelFormat;
-};
 
 UCLASS( meta=(BlueprintSpawnableComponent) )
 class EASYFFMPEG_API UVideoCaptureComponent : public USceneComponent
@@ -74,7 +39,7 @@ protected:
 
 	void DestroyVideoFileWriter();
 
-	bool InitFrameGrabber();
+	bool InitFrameGrabber(const FIntPoint& ViewportSize);
 
 	void ReleaseFrameGrabber();
 
@@ -96,6 +61,9 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Video Capture")
 	FCaptureConfigs	CaptureConfigs;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Video Capture")
+	int32 CapturedFrameNumber = 0;
+
 	EMovieCaptureState CaptureState;
 
 private:
@@ -111,4 +79,7 @@ private:
 	FArchive* Writer;
 
 	int32 ShouldCutFrameCount;
+
+	FTimespan PassedTime;
+	FTimespan FrameTimeForCapture;
 };
