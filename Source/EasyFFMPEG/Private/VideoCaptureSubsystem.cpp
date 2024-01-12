@@ -25,6 +25,7 @@ extern "C" {
 #include "libavutil/imgutils.h"
 #include "libswscale/swscale.h"
 #include "libavutil/error.h"
+#include <libswresample/swresample.h>
 }
 
 #if WITH_EDITOR
@@ -42,8 +43,84 @@ void UVideoCaptureSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
+void UVideoCaptureSubsystem::OnNewSubmixBuffer(const USoundSubmix* OwningSubmix, float* AudioData, int32 NumSamples, int32 NumChannels, const int32 SampleRate, double AudioClock)
+{
+	Audio::AlignedFloatBuffer InData;
+	InData.Append(AudioData, NumSamples);
+	Audio::TSampleBuffer<float> FloatBuffer(InData, NumChannels, SampleRate);
+
+	if (FloatBuffer.GetNumChannels() != 2)
+	{
+		FloatBuffer.MixBufferToChannels(2);
+	}
+	FloatBuffer.Clamp();
+
+	Audio::TSampleBuffer<int16> PCMData;
+	PCMData = FloatBuffer;
+
+	AudioSubmixBuffer.Append(reinterpret_cast<const uint8*>(PCMData.GetData()), PCMData.GetNumSamples() * sizeof(*PCMData.GetData()));
+
+	int32 FrameBytes = AudioTempFrame->nb_samples * AudioCodecCtx->channels * 2;
+
+	if (AudioSubmixBuffer.Num() < FrameBytes) {
+		return;
+	}
+
+	FMemory::Memcpy(AudioTempFrame->data[0], AudioSubmixBuffer.GetData(), FrameBytes);
+
+	AudioSubmixBuffer.RemoveAt(0, FrameBytes);
+
+	int32 DST_NB_Samples = av_rescale_rnd(swr_get_delay(AudioSwrCtx, AudioCodecCtx->sample_rate) + AudioTempFrame->nb_samples,
+		AudioCodecCtx->sample_rate, AudioCodecCtx->sample_rate, AV_ROUND_UP);
+
+	if (av_frame_make_writable(AudioFrame) < 0) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Cloud not make dst frame writable."));
+		return;
+	}
+
+	if (swr_convert(AudioSwrCtx, AudioFrame->data, DST_NB_Samples, (const uint8**)AudioTempFrame->data, AudioTempFrame->nb_samples) < 0) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Cloud not convert source frame to dst frame."));
+		return;
+	}
+
+	AudioFrame->pts = av_rescale_q(AudioSampleCount, { 1, AudioCodecCtx->sample_rate }, AudioCodecCtx->time_base);
+	AudioSampleCount += DST_NB_Samples;
+	//AudioStream.NextPts++;
+
+	int32 Result = avcodec_send_frame(AudioCodecCtx, AudioFrame);
+	if (Result < 0) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Error sending a frame to the encoder."));
+		return;
+	}
+
+	AVPacket AudioPacket;
+	FMemory::Memset(AudioPacket, 0);
+	av_init_packet(&AudioPacket);
+
+	while (Result >= 0)
+	{
+		Result = avcodec_receive_packet(AudioCodecCtx, &AudioPacket);
+		if (Result == AVERROR(EAGAIN) || Result == AVERROR_EOF) {
+			return;
+		}
+		else if (Result < 0)
+		{
+			UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Error encoding audio frame."));
+			return;
+		}
+
+		av_packet_rescale_ts(&AudioPacket, AudioCodecCtx->time_base, AudioStream->time_base);
+		AudioPacket.stream_index = AudioStream->index;
+
+		av_interleaved_write_frame(FormatCtx, &AudioPacket);
+
+		av_packet_unref(&AudioPacket);
+	}
+}
+
 void UVideoCaptureSubsystem::StartCapture(const FString& InVideoFilename, const FCaptureConfigs& InConfigs)
 {
+	AudioSampleCount = 0;
 	CapturedFrameNumber = 0;
 	CaptureConfigs = InConfigs;
 
@@ -136,6 +213,86 @@ void UVideoCaptureSubsystem::StartCapture(const FString& InVideoFilename, const 
 
 	avcodec_parameters_from_context(Stream->codecpar, CodecCtx);
 
+	AudioCodec = avcodec_find_encoder(FormatCtx->oformat->audio_codec);
+	if (AudioCodec == nullptr) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Codec not found."));
+		StopCapture();
+		return;
+	}
+
+	AudioStream = avformat_new_stream(FormatCtx, AudioCodec);
+	if (AudioStream == nullptr) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Can not allocate a new stream."));
+		StopCapture();
+		return;
+	}
+
+	AudioStream->id = FormatCtx->nb_streams - 1;
+
+	AudioCodecCtx = avcodec_alloc_context3(AudioCodec);
+	if (AudioCodec == nullptr) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("InitCapture() failed: Cloud not allocate audio codec context."));
+		StopCapture();
+		return;
+	}
+
+	AudioCodecCtx->sample_fmt = AV_SAMPLE_FMT_FLTP;
+	AudioCodecCtx->bit_rate = 196608;
+	AudioCodecCtx->sample_rate = 48000;
+	AudioCodecCtx->channel_layout = AV_CH_LAYOUT_STEREO;
+	AudioCodecCtx->channels = av_get_channel_layout_nb_channels(AudioCodecCtx->channel_layout);
+
+	if (FormatCtx->oformat->flags & AVFMT_GLOBALHEADER) {
+		AudioCodecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+	}
+
+	avcodec_parameters_from_context(AudioStream->codecpar, AudioCodecCtx);
+
+	AudioStream->time_base = { 1, AudioCodecCtx->sample_rate };
+
+	if (avcodec_open2(AudioCodecCtx, AudioCodec, nullptr) < 0) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Cloud not open audio codec."));
+		StopCapture();
+		return;
+	}
+
+	int32 SamplesCount = 0;
+	if (AudioCodecCtx->codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE) {
+		SamplesCount = 10000;
+	}
+	else {
+		SamplesCount = AudioCodecCtx->frame_size;
+	}
+
+	AudioFrame = AllocAudioFrame(AudioCodecCtx->sample_fmt, AudioCodecCtx->channel_layout, AudioCodecCtx->sample_rate, SamplesCount);
+	AudioTempFrame = AllocAudioFrame(AV_SAMPLE_FMT_S16, AudioCodecCtx->channel_layout, AudioCodecCtx->sample_rate, SamplesCount);
+
+	if (avcodec_parameters_from_context(AudioStream->codecpar, AudioCodecCtx) < 0) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Cloud not copy the stream parameters."));
+		StopCapture();
+		return;
+	}
+
+	AudioSwrCtx = swr_alloc();
+	if (AudioSwrCtx == nullptr) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Cloud not allocate resampler context."));
+		StopCapture();
+		return;
+	}
+
+	av_opt_set_int(AudioSwrCtx, "in_channel_count", AudioCodecCtx->channels, 0);
+	av_opt_set_int(AudioSwrCtx, "in_sample_rate", AudioCodecCtx->sample_rate, 0);
+	av_opt_set_int(AudioSwrCtx, "in_sample_fmt", AV_SAMPLE_FMT_S16, 0);
+	av_opt_set_int(AudioSwrCtx, "out_channel_count", AudioCodecCtx->channels, 0);
+	av_opt_set_int(AudioSwrCtx, "out_sample_rate", AudioCodecCtx->sample_rate, 0);
+	av_opt_set_int(AudioSwrCtx, "out_sample_fmt", AudioCodecCtx->sample_fmt, 0);
+
+	if (swr_init(AudioSwrCtx) < 0) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Failed to initialize the resampling context."));
+		StopCapture();
+		return;
+	}
+
 	av_dump_format(FormatCtx, 0, TCHAR_TO_UTF8(*VideoFilename), 1);
 
 	result = avio_open(&FormatCtx->pb, TCHAR_TO_UTF8(*VideoFilename), AVIO_FLAG_WRITE);
@@ -188,6 +345,11 @@ void UVideoCaptureSubsystem::StartCapture(const FString& InVideoFilename, const 
 		BackBufferHandle = FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent().AddUObject(this, &UVideoCaptureSubsystem::OnBackBufferReady_RenderThread);
 	}
 
+	FAudioDevice* AudioDevice = GEngine->GetActiveAudioDevice().GetAudioDevice();
+	if (AudioDevice) {
+		AudioDevice->RegisterSubmixBufferListener(this);
+	}
+
 	CaptureState = EMovieCaptureState::Initialized;
 }
 
@@ -203,6 +365,11 @@ void UVideoCaptureSubsystem::StopCapture()
 		FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent().Remove(BackBufferHandle);
 	}
 
+	FAudioDevice* AudioDevice = GEngine->GetActiveAudioDevice().GetAudioDevice();
+	if (AudioDevice) {
+		AudioDevice->UnregisterSubmixBufferListener(this);
+	}
+
 	BlockUntilAvailable();
 
 	ViewportWindow = nullptr;
@@ -211,6 +378,8 @@ void UVideoCaptureSubsystem::StopCapture()
 
 	DestroyVideoFileWriter();
 	ReleaseContext();
+
+	AudioSubmixBuffer.Empty();
 
 	CaptureState = EMovieCaptureState::NotInit;
 }
@@ -344,6 +513,26 @@ void UVideoCaptureSubsystem::ReleaseContext()
 	if (Packet != nullptr) {
 		av_packet_free(&Packet);
 		Packet = nullptr;
+	}
+
+	if (AudioCodecCtx != nullptr) {
+		avcodec_free_context(&AudioCodecCtx);
+		AudioCodecCtx = nullptr;
+	}
+
+	if (AudioFrame != nullptr) {
+		av_frame_free(&AudioFrame);
+		AudioFrame = nullptr;
+	}
+
+	if (AudioTempFrame != nullptr) {
+		av_frame_free(&AudioTempFrame);
+		AudioTempFrame = nullptr;
+	}
+
+	if (AudioSwrCtx != nullptr) {
+		swr_free(&AudioSwrCtx);
+		AudioSwrCtx = nullptr;
 	}
 }
 
@@ -549,4 +738,27 @@ void UVideoCaptureSubsystem::ResolveRenderTarget(const FTexture2DRHIRef& SourceB
 		RHICmdList.UnmapStagingSurface(ReadbackTexture);
 		AvailableEvent->Trigger();
 	};
+}
+
+AVFrame* UVideoCaptureSubsystem::AllocAudioFrame(AVSampleFormat Format, uint64 ChannelLayout, int32 SampleRate, int32 SamplesCount)
+{
+	AVFrame* NewFrame = av_frame_alloc();
+
+	if (NewFrame == nullptr) {
+		UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Error allocating an audio frame."));
+		return nullptr;
+	}
+
+	NewFrame->format = Format;
+	NewFrame->channel_layout = ChannelLayout;
+	NewFrame->sample_rate = SampleRate;
+	NewFrame->nb_samples = SamplesCount;
+
+	if (SamplesCount) {
+		if (av_frame_get_buffer(NewFrame, 0) < 0) {
+			UE_LOG(LogVideoCaptureSubsystem, Error, TEXT("Error allocating an audio buffer."));
+		}
+	}
+
+	return NewFrame;
 }
